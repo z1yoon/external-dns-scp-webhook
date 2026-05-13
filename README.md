@@ -26,15 +26,15 @@ ExternalDNS → localhost:8888 (webhook) → SCP OpenAPI → DNS records
 | `HEALTH_HOST` | `0.0.0.0` | Health server listen host |
 | `HEALTH_PORT` | `8080` | Health server listen port |
 
-## Deploy with o9-external-dns Helm chart
+## Deploy with ExternalDNS Helm chart
 
 ```yaml
 # values override
 provider: webhook
 
 sidecars:
-  - name: scp-webhook
-    image: ghcr.io/z1yoon/external-dns-scp-webhook:latest
+  - name: external-dns-scp-webhook
+    image: ghcr.io/z1yoon/external-dns-scp-webhook:v0.1.0
     ports:
       - name: http
         containerPort: 8888
@@ -52,13 +52,13 @@ sidecars:
       - name: SCP_ACCESS_KEY
         valueFrom:
           secretKeyRef:
-            name: scp-credentials
-            key: accessKey
+            name: scp-external-dns-credentials
+            key: access_key
       - name: SCP_SECRET_KEY
         valueFrom:
           secretKeyRef:
-            name: scp-credentials
-            key: secretKey
+            name: scp-external-dns-credentials
+            key: secret_key
       - name: SCP_PROJECT_ID
         value: "PROJECT-xxxxxxxx"
       - name: SCP_ZONE_ID
@@ -67,8 +67,7 @@ sidecars:
         value: "example.com"
 
 extraArgs:
-  - --provider=webhook
-  - --webhook-provider-url=http://localhost:8888
+  webhook-provider-url: http://localhost:8888
 ```
 
 ## Release
