@@ -102,16 +102,21 @@ type listRecordsResponse struct {
 	TotalCount int         `json:"totalCount"`
 }
 
+type dnsRecordMapping struct {
+	Preference        int    `json:"preference"`
+	RecordDestination string `json:"recordDestination"`
+}
+
 type createRecordRequest struct {
-	Name    string   `json:"dnsRecordName"`
-	Type    string   `json:"dnsRecordType"`
-	Records []string `json:"recordDestinations"`
-	TTL     int32    `json:"ttl"`
+	Name    string             `json:"dnsRecordName"`
+	Type    string             `json:"dnsRecordType"`
+	Mapping []dnsRecordMapping `json:"dnsRecordMapping"`
+	TTL     int32              `json:"ttl"`
 }
 
 type updateRecordRequest struct {
-	Records []string `json:"recordDestinations"`
-	TTL     int32    `json:"ttl"`
+	Mapping []dnsRecordMapping `json:"dnsRecordMapping"`
+	TTL     int32              `json:"ttl"`
 }
 
 // ListRecords returns all DNS records in the zone.
@@ -126,23 +131,31 @@ func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, e
 }
 
 // CreateRecord creates a new DNS record in the zone.
-// POST /oss2/dns/v2/{domainId}/dns-records
+// POST /oss2/dns/v3/{domainId}/dns-records
 func (c *Client) CreateRecord(ctx context.Context, zoneID, name, recordType string, targets []string, ttl int32) error {
-	path := fmt.Sprintf("/dns/v2/%s/dns-records", zoneID)
+	path := fmt.Sprintf("/dns/v3/%s/dns-records", zoneID)
+	mapping := make([]dnsRecordMapping, len(targets))
+	for i, t := range targets {
+		mapping[i] = dnsRecordMapping{Preference: i + 1, RecordDestination: t}
+	}
 	return c.do(ctx, http.MethodPost, path, createRecordRequest{
 		Name:    name,
 		Type:    recordType,
-		Records: targets,
+		Mapping: mapping,
 		TTL:     ttl,
 	}, nil)
 }
 
 // UpdateRecord updates targets/TTL of an existing record.
-// PUT /oss2/dns/v2/{domainId}/dns-records/{recordId}
+// PUT /oss2/dns/v3/{domainId}/dns-records/{recordId}
 func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targets []string, ttl int32) error {
-	path := fmt.Sprintf("/dns/v2/%s/dns-records/%s", zoneID, recordID)
+	path := fmt.Sprintf("/dns/v3/%s/dns-records/%s", zoneID, recordID)
+	mapping := make([]dnsRecordMapping, len(targets))
+	for i, t := range targets {
+		mapping[i] = dnsRecordMapping{Preference: i + 1, RecordDestination: t}
+	}
 	return c.do(ctx, http.MethodPut, path, updateRecordRequest{
-		Records: targets,
+		Mapping: mapping,
 		TTL:     ttl,
 	}, nil)
 }
