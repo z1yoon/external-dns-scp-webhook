@@ -90,10 +90,10 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 }
 
 type DNSRecord struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	Records []string `json:"records"`
+	ID      string   `json:"dnsRecordId"`
+	Name    string   `json:"dnsRecordName"`
+	Type    string   `json:"dnsRecordType"`
+	Records []string `json:"recordDestinations"`
 	TTL     int32    `json:"ttl"`
 }
 
@@ -103,21 +103,21 @@ type listRecordsResponse struct {
 }
 
 type createRecordRequest struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	Records []string `json:"records"`
+	Name    string   `json:"dnsRecordName"`
+	Type    string   `json:"dnsRecordType"`
+	Records []string `json:"recordDestinations"`
 	TTL     int32    `json:"ttl"`
 }
 
 type updateRecordRequest struct {
-	Records []string `json:"records"`
+	Records []string `json:"recordDestinations"`
 	TTL     int32    `json:"ttl"`
 }
 
 // ListRecords returns all DNS records in the zone.
-// GET /oss2/dns/v2/projects/{projectId}/dns-domains/{domainId}/dns-records
+// GET /oss2/dns/v2/{domainId}/dns-records
 func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, error) {
-	path := fmt.Sprintf("/dns/v2/projects/%s/dns-domains/%s/dns-records", c.projectID, zoneID)
+	path := fmt.Sprintf("/dns/v2/%s/dns-records", zoneID)
 	var result listRecordsResponse
 	if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
@@ -126,9 +126,9 @@ func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, e
 }
 
 // CreateRecord creates a new DNS record in the zone.
-// POST /oss2/dns/v3/projects/{projectId}/dns-domains/{domainId}/dns-records
+// POST /oss2/dns/v2/{domainId}/dns-records
 func (c *Client) CreateRecord(ctx context.Context, zoneID, name, recordType string, targets []string, ttl int32) error {
-	path := fmt.Sprintf("/dns/v3/projects/%s/dns-domains/%s/dns-records", c.projectID, zoneID)
+	path := fmt.Sprintf("/dns/v2/%s/dns-records", zoneID)
 	return c.do(ctx, http.MethodPost, path, createRecordRequest{
 		Name:    name,
 		Type:    recordType,
@@ -138,9 +138,9 @@ func (c *Client) CreateRecord(ctx context.Context, zoneID, name, recordType stri
 }
 
 // UpdateRecord updates targets/TTL of an existing record.
-// PUT /oss2/dns/v3/projects/{projectId}/dns-domains/{domainId}/dns-records/{recordId}
+// PUT /oss2/dns/v2/{domainId}/dns-records/{recordId}
 func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targets []string, ttl int32) error {
-	path := fmt.Sprintf("/dns/v3/projects/%s/dns-domains/%s/dns-records/%s", c.projectID, zoneID, recordID)
+	path := fmt.Sprintf("/dns/v2/%s/dns-records/%s", zoneID, recordID)
 	return c.do(ctx, http.MethodPut, path, updateRecordRequest{
 		Records: targets,
 		TTL:     ttl,
@@ -148,8 +148,8 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targ
 }
 
 // DeleteRecord removes a DNS record by ID.
-// DELETE /oss2/dns/v2/projects/{projectId}/dns-domains/{domainId}/dns-records/{recordId}
+// DELETE /oss2/dns/v2/{domainId}/dns-records/{recordId}
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
-	path := fmt.Sprintf("/dns/v2/projects/%s/dns-domains/%s/dns-records/%s", c.projectID, zoneID, recordID)
+	path := fmt.Sprintf("/dns/v2/%s/dns-records/%s", zoneID, recordID)
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
