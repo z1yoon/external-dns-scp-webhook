@@ -18,7 +18,6 @@ import (
 const (
 	clientType  = "OpenApi"
 	apiLanguage = "en-US"
-	basePath    = "/oss2"
 )
 
 type Client struct {
@@ -40,11 +39,11 @@ func NewClient(apiURL, accessKey, secretKey, projectID string) *Client {
 }
 
 // sign builds the HMAC-SHA256 signature required by SCP OpenAPI.
-// StringToSign = method + "\n" + urlPath + "\n" + timestamp + "\n" + accessKey + "\n" + projectId + "\n" + clientType
-func (c *Client) sign(method, urlPath, timestamp string) string {
-	parts := []string{method, urlPath, timestamp, c.accessKey, c.projectID, clientType}
+// StringToSign = method + fullURL + timestamp + accessKey + projectId + clientType (no separators)
+func (c *Client) sign(method, fullURL, timestamp string) string {
+	message := method + fullURL + timestamp + c.accessKey + c.projectID + clientType
 	mac := hmac.New(sha256.New, []byte(c.secretKey))
-	mac.Write([]byte(strings.Join(parts, "\n")))
+	mac.Write([]byte(message))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -58,8 +57,8 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		reqBody = bytes.NewReader(b)
 	}
 
-	fullPath := basePath + path
-	req, err := http.NewRequestWithContext(ctx, method, c.apiURL+fullPath, reqBody)
+	fullURL := c.apiURL + path
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
 	if err != nil {
 		return err
 	}
@@ -67,7 +66,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Cmp-AccessKey", c.accessKey)
-	req.Header.Set("X-Cmp-Signature", c.sign(method, fullPath, timestamp))
+	req.Header.Set("X-Cmp-Signature", c.sign(method, fullURL, timestamp))
 	req.Header.Set("X-Cmp-Timestamp", timestamp)
 	req.Header.Set("X-Cmp-ClientType", clientType)
 	req.Header.Set("X-Cmp-ProjectId", c.projectID)
