@@ -118,15 +118,23 @@ type updateRecordRequest struct {
 	TTL     int32              `json:"ttl"`
 }
 
-// ListRecords returns all DNS records in the zone.
-// GET /oss2/dns/v2/{domainId}/dns-records
+// ListRecords returns all DNS records in the zone, paginating until totalCount is reached.
+// GET /dns/v2/{domainId}/dns-records?page=0&size=100
 func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, error) {
-	path := fmt.Sprintf("/dns/v2/%s/dns-records", zoneID)
-	var result listRecordsResponse
-	if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
-		return nil, err
+	const pageSize = 100
+	var all []DNSRecord
+	for page := 0; ; page++ {
+		path := fmt.Sprintf("/dns/v2/%s/dns-records?page=%d&size=%d", zoneID, page, pageSize)
+		var result listRecordsResponse
+		if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.Contents...)
+		if len(all) >= result.TotalCount || len(result.Contents) < pageSize {
+			break
+		}
 	}
-	return result.Contents, nil
+	return all, nil
 }
 
 // CreateRecord creates a new DNS record in the zone.
