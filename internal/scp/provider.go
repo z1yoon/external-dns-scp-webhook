@@ -3,6 +3,7 @@ package scp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"sigs.k8s.io/external-dns/endpoint"
@@ -61,6 +62,7 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list SCP records: %w", err)
 	}
+	log.Infof("[SCP] Fetched %d records from SCP zone %s", len(records), p.zoneID)
 
 	var endpoints []*endpoint.Endpoint
 	for _, r := range records {
@@ -69,9 +71,10 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 		}
 		ep := endpoint.NewEndpointWithTTL(r.Name, r.Type, endpoint.TTL(r.TTL), r.Records...)
 		ep.WithProviderSpecific("scpRecordID", r.ID)
+		log.Infof("[SCP] READ: %s \"%s\" → %s (TTL %d)", r.Type, r.Name, strings.Join(r.Records, ", "), r.TTL)
 		endpoints = append(endpoints, ep)
 	}
-	log.Infof("[SCP] Records: returned %d endpoints", len(endpoints))
+	log.Infof("[SCP] Returning %d endpoints to ExternalDNS", len(endpoints))
 	return endpoints, nil
 }
 
@@ -80,25 +83,39 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 		return nil
 	}
 
+	creates := len(changes.Create)
+	updates := len(changes.UpdateNew)
+	deletes := len(changes.Delete)
+
+	if creates+updates+deletes == 0 {
+		log.Infof("[SCP] ApplyChanges: no changes")
+		return nil
+	}
+	log.Infof("[SCP] ApplyChanges: %d create, %d update, %d delete", creates, updates, deletes)
+
 	for _, ep := range changes.Create {
+		targets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] DryRun: create %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+			log.Infof("[SCP] [DryRun] CREATE %s \"%s\" → %s (TTL %d)", ep.RecordType, ep.DNSName, targets, ttl(ep))
 			continue
 		}
-		log.Infof("[SCP] Create %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+		log.Infof("[SCP] CREATE %s \"%s\" → %s (TTL %d)", ep.RecordType, ep.DNSName, targets, ttl(ep))
 		if err := p.client.CreateRecord(ctx, p.zoneID, ep.DNSName, ep.RecordType, ep.Targets, ttl(ep)); err != nil {
 			return fmt.Errorf("create %s: %w", ep.DNSName, err)
 		}
+		log.Infof("[SCP] CREATE OK: %s \"%s\"", ep.RecordType, ep.DNSName)
 	}
 
 	for i, ep := range changes.UpdateNew {
 		old := changes.UpdateOld[i]
 		recordID, _ := old.GetProviderSpecificProperty("scpRecordID")
+		oldTargets := strings.Join(old.Targets, ", ")
+		newTargets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] DryRun: update %s %s → %v (id=%s)", ep.RecordType, ep.DNSName, ep.Targets, recordID)
+			log.Infof("[SCP] [DryRun] UPDATE %s \"%s\" [%s] → [%s] (TTL %d)", ep.RecordType, ep.DNSName, oldTargets, newTargets, ttl(ep))
 			continue
 		}
-		log.Infof("[SCP] Update %s %s → %v (id=%s)", ep.RecordType, ep.DNSName, ep.Targets, recordID)
+		log.Infof("[SCP] UPDATE %s \"%s\" [%s] → [%s] (TTL %d)", ep.RecordType, ep.DNSName, oldTargets, newTargets, ttl(ep))
 		if recordID == "" {
 			if err := p.deleteByName(ctx, old.DNSName, old.RecordType); err != nil {
 				return err
@@ -106,20 +123,22 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 			if err := p.client.CreateRecord(ctx, p.zoneID, ep.DNSName, ep.RecordType, ep.Targets, ttl(ep)); err != nil {
 				return fmt.Errorf("recreate %s: %w", ep.DNSName, err)
 			}
-			continue
+		} else {
+			if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, ep.Targets, ttl(ep)); err != nil {
+				return fmt.Errorf("update %s: %w", ep.DNSName, err)
+			}
 		}
-		if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, ep.Targets, ttl(ep)); err != nil {
-			return fmt.Errorf("update %s: %w", ep.DNSName, err)
-		}
+		log.Infof("[SCP] UPDATE OK: %s \"%s\" → [%s]", ep.RecordType, ep.DNSName, newTargets)
 	}
 
 	for _, ep := range changes.Delete {
 		recordID, _ := ep.GetProviderSpecificProperty("scpRecordID")
+		targets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] DryRun: delete %s %s (id=%s)", ep.RecordType, ep.DNSName, recordID)
+			log.Infof("[SCP] [DryRun] DELETE %s \"%s\" (was: %s)", ep.RecordType, ep.DNSName, targets)
 			continue
 		}
-		log.Infof("[SCP] Delete %s %s (id=%s)", ep.RecordType, ep.DNSName, recordID)
+		log.Infof("[SCP] DELETE %s \"%s\" (was: %s)", ep.RecordType, ep.DNSName, targets)
 		if recordID != "" {
 			if err := p.client.DeleteRecord(ctx, p.zoneID, recordID); err != nil {
 				return fmt.Errorf("delete %s: %w", ep.DNSName, err)
@@ -129,6 +148,7 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 				return err
 			}
 		}
+		log.Infof("[SCP] DELETE OK: %s \"%s\"", ep.RecordType, ep.DNSName)
 	}
 
 	return nil
