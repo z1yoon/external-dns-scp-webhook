@@ -87,7 +87,7 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 		name := p.toFQDN(r.Name)
 		ep := endpoint.NewEndpointWithTTL(name, r.Type, endpoint.TTL(r.TTL), r.Records...)
 		ep.WithProviderSpecific("scpRecordID", r.ID)
-		log.Infof("[SCP] read: %s %s → %v", r.Type, name, r.Records)
+		log.Debugf("[SCP] read: %s %s → %v", r.Type, name, r.Records)
 		endpoints = append(endpoints, ep)
 	}
 	return endpoints, nil
