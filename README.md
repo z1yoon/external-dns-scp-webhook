@@ -10,6 +10,8 @@ This webhook runs as a sidecar alongside ExternalDNS. ExternalDNS calls the webh
 ExternalDNS → localhost:8888 (webhook) → SCP OpenAPI → DNS records
 ```
 
+SCP stores DNS records as short names without a public suffix (e.g. `myapp.gs12345.sds`). Set `SCP_DOMAIN_FILTER` to the zone's public suffix (e.g. `example.com`) so the webhook appends it on read and strips it on write. This value must match ExternalDNS `domainFilters`.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -19,7 +21,7 @@ ExternalDNS → localhost:8888 (webhook) → SCP OpenAPI → DNS records
 | `SCP_SECRET_KEY` | — | SCP secret key (required) |
 | `SCP_PROJECT_ID` | — | SCP project ID (required) |
 | `SCP_ZONE_ID` | — | DNS domain ID, e.g. `DNS_DOMAIN_SERVICE-xxx` (required) |
-| `SCP_DOMAIN_FILTER` | — | Limit records to this domain, e.g. `example.com` |
+| `SCP_DOMAIN_FILTER` | — | Zone public suffix, e.g. `example.com` — must match ExternalDNS `domainFilters` |
 | `DRY_RUN` | `false` | Log changes without applying |
 | `WEBHOOK_HOST` | `localhost` | Webhook listen host |
 | `WEBHOOK_PORT` | `8888` | Webhook listen port |
@@ -29,14 +31,16 @@ ExternalDNS → localhost:8888 (webhook) → SCP OpenAPI → DNS records
 ## Deploy with ExternalDNS Helm chart
 
 ```yaml
-# values override
 provider: webhook
+
+domainFilters:
+  - example.com  # must match SCP_DOMAIN_FILTER below
 
 sidecars:
   - name: external-dns-scp-webhook
-    image: ghcr.io/z1yoon/external-dns-scp-webhook:v0.1.0
+    image: ghcr.io/z1yoon/external-dns-scp-webhook:latest
     ports:
-      - name: http
+      - name: webhook
         containerPort: 8888
       - name: health
         containerPort: 8080
@@ -75,8 +79,8 @@ extraArgs:
 Tag a commit to trigger the release workflow:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The image is published to `ghcr.io/z1yoon/external-dns-scp-webhook`.
