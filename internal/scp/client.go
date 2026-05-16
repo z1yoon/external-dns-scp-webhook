@@ -38,8 +38,7 @@ func NewClient(apiURL, accessKey, secretKey, projectID string) *Client {
 	}
 }
 
-// sign builds the HMAC-SHA256 signature required by SCP OpenAPI.
-// StringToSign = method + fullURL + timestamp + accessKey + projectId + clientType (no separators)
+// SCP HMAC-SHA256: method + fullURL + timestamp + accessKey + projectId + clientType
 func (c *Client) sign(method, fullURL, timestamp string) string {
 	message := method + fullURL + timestamp + c.accessKey + c.projectID + clientType
 	mac := hmac.New(sha256.New, []byte(c.secretKey))
@@ -118,8 +117,6 @@ type updateRecordRequest struct {
 	TTL     int32              `json:"ttl"`
 }
 
-// ListRecords returns all DNS records in the zone, paginating until totalCount is reached.
-// GET /dns/v2/{domainId}/dns-records?page=0&size=100
 func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, error) {
 	const pageSize = 100
 	var all []DNSRecord
@@ -137,8 +134,6 @@ func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]DNSRecord, e
 	return all, nil
 }
 
-// CreateRecord creates a new DNS record in the zone.
-// POST /oss2/dns/v3/{domainId}/dns-records
 func (c *Client) CreateRecord(ctx context.Context, zoneID, name, recordType string, targets []string, ttl int32) error {
 	path := fmt.Sprintf("/dns/v3/%s/dns-records", zoneID)
 	mapping := make([]dnsRecordMapping, len(targets))
@@ -153,8 +148,6 @@ func (c *Client) CreateRecord(ctx context.Context, zoneID, name, recordType stri
 	}, nil)
 }
 
-// UpdateRecord updates targets/TTL of an existing record.
-// PUT /oss2/dns/v3/{domainId}/dns-records/{recordId}
 func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targets []string, ttl int32) error {
 	path := fmt.Sprintf("/dns/v3/%s/dns-records/%s", zoneID, recordID)
 	mapping := make([]dnsRecordMapping, len(targets))
@@ -167,8 +160,6 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targ
 	}, nil)
 }
 
-// DeleteRecord removes a DNS record by ID.
-// DELETE /oss2/dns/v2/{domainId}/dns-records/{recordId}
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
 	path := fmt.Sprintf("/dns/v2/%s/dns-records/%s", zoneID, recordID)
 	return c.do(ctx, http.MethodDelete, path, nil, nil)

@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/external-dns/provider"
 )
 
-const defaultTTL = 60
+const defaultTTL = 300
 
 type Config struct {
 	APIURL       string `env:"SCP_API_URL" default:"https://openapi.samsungsdscloud.com"`
@@ -25,10 +25,11 @@ type Config struct {
 
 type Provider struct {
 	provider.BaseProvider
-	client       *Client
-	zoneID       string
-	domainFilter endpoint.DomainFilter
-	dryRun       bool
+	client          *Client
+	zoneID          string
+	domainFilterStr string
+	domainFilter    endpoint.DomainFilter
+	dryRun          bool
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -43,9 +44,10 @@ func NewProvider(cfg Config) (*Provider, error) {
 	}
 
 	p := &Provider{
-		client: NewClient(cfg.APIURL, cfg.AccessKey, cfg.SecretKey, cfg.ProjectID),
-		zoneID: cfg.ZoneID,
-		dryRun: cfg.DryRun,
+		client:          NewClient(cfg.APIURL, cfg.AccessKey, cfg.SecretKey, cfg.ProjectID),
+		zoneID:          cfg.ZoneID,
+		domainFilterStr: cfg.DomainFilter,
+		dryRun:          cfg.DryRun,
 	}
 	if cfg.DomainFilter != "" {
 		p.domainFilter = endpoint.NewDomainFilter([]string{cfg.DomainFilter})
@@ -57,24 +59,37 @@ func (p *Provider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
 }
 
+func (p *Provider) toFQDN(name string) string {
+	if p.domainFilterStr == "" || strings.HasSuffix(name, "."+p.domainFilterStr) {
+		return name
+	}
+	return name + "." + p.domainFilterStr
+}
+
+func (p *Provider) toSCPName(fqdn string) string {
+	if p.domainFilterStr == "" {
+		return fqdn
+	}
+	return strings.TrimSuffix(fqdn, "."+p.domainFilterStr)
+}
+
 func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	records, err := p.client.ListRecords(ctx, p.zoneID)
 	if err != nil {
 		return nil, fmt.Errorf("list SCP records: %w", err)
 	}
-	log.Infof("[SCP] Fetched %d records from SCP zone %s", len(records), p.zoneID)
 
 	var endpoints []*endpoint.Endpoint
 	for _, r := range records {
 		if !provider.SupportedRecordType(r.Type) {
 			continue
 		}
-		ep := endpoint.NewEndpointWithTTL(r.Name, r.Type, endpoint.TTL(r.TTL), r.Records...)
+		name := p.toFQDN(r.Name)
+		ep := endpoint.NewEndpointWithTTL(name, r.Type, endpoint.TTL(r.TTL), r.Records...)
 		ep.WithProviderSpecific("scpRecordID", r.ID)
-		log.Infof("[SCP] READ: %s \"%s\" → %s (TTL %d)", r.Type, r.Name, strings.Join(r.Records, ", "), r.TTL)
+		log.Infof("[SCP] read: %s %s → %v", r.Type, name, r.Records)
 		endpoints = append(endpoints, ep)
 	}
-	log.Infof("[SCP] Returning %d endpoints to ExternalDNS", len(endpoints))
 	return endpoints, nil
 }
 
@@ -88,39 +103,33 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 	deletes := len(changes.Delete)
 
 	if creates+updates+deletes == 0 {
-		log.Infof("[SCP] ApplyChanges: no changes")
 		return nil
 	}
-	log.Infof("[SCP] ApplyChanges: %d create, %d update, %d delete", creates, updates, deletes)
+	log.Infof("[SCP] apply: %d create, %d update, %d delete", creates, updates, deletes)
 
 	for _, ep := range changes.Create {
-		targets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] [DryRun] CREATE %s \"%s\" → %s (TTL %d)", ep.RecordType, ep.DNSName, targets, ttl(ep))
+			log.Infof("[SCP] dry-run: create %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
 			continue
 		}
-		log.Infof("[SCP] CREATE %s \"%s\" → %s (TTL %d)", ep.RecordType, ep.DNSName, targets, ttl(ep))
-		if err := p.client.CreateRecord(ctx, p.zoneID, ep.DNSName, ep.RecordType, ep.Targets, ttl(ep)); err != nil {
+		if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, ttl(ep)); err != nil {
 			return fmt.Errorf("create %s: %w", ep.DNSName, err)
 		}
-		log.Infof("[SCP] CREATE OK: %s \"%s\"", ep.RecordType, ep.DNSName)
+		log.Infof("[SCP] created %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
 	}
 
 	for i, ep := range changes.UpdateNew {
 		old := changes.UpdateOld[i]
 		recordID, _ := old.GetProviderSpecificProperty("scpRecordID")
-		oldTargets := strings.Join(old.Targets, ", ")
-		newTargets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] [DryRun] UPDATE %s \"%s\" [%s] → [%s] (TTL %d)", ep.RecordType, ep.DNSName, oldTargets, newTargets, ttl(ep))
+			log.Infof("[SCP] dry-run: update %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
 			continue
 		}
-		log.Infof("[SCP] UPDATE %s \"%s\" [%s] → [%s] (TTL %d)", ep.RecordType, ep.DNSName, oldTargets, newTargets, ttl(ep))
 		if recordID == "" {
 			if err := p.deleteByName(ctx, old.DNSName, old.RecordType); err != nil {
 				return err
 			}
-			if err := p.client.CreateRecord(ctx, p.zoneID, ep.DNSName, ep.RecordType, ep.Targets, ttl(ep)); err != nil {
+			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, ttl(ep)); err != nil {
 				return fmt.Errorf("recreate %s: %w", ep.DNSName, err)
 			}
 		} else {
@@ -128,17 +137,15 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 				return fmt.Errorf("update %s: %w", ep.DNSName, err)
 			}
 		}
-		log.Infof("[SCP] UPDATE OK: %s \"%s\" → [%s]", ep.RecordType, ep.DNSName, newTargets)
+		log.Infof("[SCP] updated %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
 	}
 
 	for _, ep := range changes.Delete {
 		recordID, _ := ep.GetProviderSpecificProperty("scpRecordID")
-		targets := strings.Join(ep.Targets, ", ")
 		if p.dryRun {
-			log.Infof("[SCP] [DryRun] DELETE %s \"%s\" (was: %s)", ep.RecordType, ep.DNSName, targets)
+			log.Infof("[SCP] dry-run: delete %s %s", ep.RecordType, ep.DNSName)
 			continue
 		}
-		log.Infof("[SCP] DELETE %s \"%s\" (was: %s)", ep.RecordType, ep.DNSName, targets)
 		if recordID != "" {
 			if err := p.client.DeleteRecord(ctx, p.zoneID, recordID); err != nil {
 				return fmt.Errorf("delete %s: %w", ep.DNSName, err)
@@ -148,19 +155,20 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 				return err
 			}
 		}
-		log.Infof("[SCP] DELETE OK: %s \"%s\"", ep.RecordType, ep.DNSName)
+		log.Infof("[SCP] deleted %s %s", ep.RecordType, ep.DNSName)
 	}
 
 	return nil
 }
 
 func (p *Provider) deleteByName(ctx context.Context, name, rtype string) error {
+	scpName := p.toSCPName(name)
 	records, err := p.client.ListRecords(ctx, p.zoneID)
 	if err != nil {
 		return err
 	}
 	for _, r := range records {
-		if r.Name == name && r.Type == rtype {
+		if r.Name == scpName && r.Type == rtype {
 			if err := p.client.DeleteRecord(ctx, p.zoneID, r.ID); err != nil {
 				return fmt.Errorf("delete by name %s: %w", name, err)
 			}
