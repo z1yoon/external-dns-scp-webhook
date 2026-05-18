@@ -92,11 +92,24 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 		}
 		sort.Strings(targets)
 		ep := endpoint.NewEndpointWithTTL(name, r.Type, endpoint.TTL(r.TTL), targets...)
-		ep.WithProviderSpecific("scpRecordID", r.ID)
 		log.Debugf("[SCP] read: %s %s → %v", r.Type, name, targets)
 		endpoints = append(endpoints, ep)
 	}
 	return endpoints, nil
+}
+
+func (p *Provider) findRecordID(ctx context.Context, name, rtype string) (string, error) {
+	records, err := p.client.ListRecords(ctx, p.zoneID)
+	if err != nil {
+		return "", err
+	}
+	scpName := p.toSCPName(name)
+	for _, r := range records {
+		if r.Name == scpName && r.Type == rtype {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }
 
 func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
@@ -126,15 +139,15 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 
 	for i, ep := range changes.UpdateNew {
 		old := changes.UpdateOld[i]
-		recordID, _ := old.GetProviderSpecificProperty("scpRecordID")
 		if p.dryRun {
 			log.Infof("[SCP] dry-run: update %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, ep.Targets)
 			continue
 		}
+		recordID, err := p.findRecordID(ctx, old.DNSName, old.RecordType)
+		if err != nil {
+			return fmt.Errorf("find record %s: %w", old.DNSName, err)
+		}
 		if recordID == "" {
-			if err := p.deleteByName(ctx, old.DNSName, old.RecordType); err != nil {
-				return err
-			}
 			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, ttl(ep)); err != nil {
 				return fmt.Errorf("recreate %s: %w", ep.DNSName, err)
 			}
@@ -147,39 +160,22 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 	}
 
 	for _, ep := range changes.Delete {
-		recordID, _ := ep.GetProviderSpecificProperty("scpRecordID")
 		if p.dryRun {
 			log.Infof("[SCP] dry-run: delete %s %s", ep.RecordType, ep.DNSName)
 			continue
+		}
+		recordID, err := p.findRecordID(ctx, ep.DNSName, ep.RecordType)
+		if err != nil {
+			return fmt.Errorf("find record %s: %w", ep.DNSName, err)
 		}
 		if recordID != "" {
 			if err := p.client.DeleteRecord(ctx, p.zoneID, recordID); err != nil {
 				return fmt.Errorf("delete %s: %w", ep.DNSName, err)
 			}
-		} else {
-			if err := p.deleteByName(ctx, ep.DNSName, ep.RecordType); err != nil {
-				return err
-			}
 		}
 		log.Infof("[SCP] deleted %s %s", ep.RecordType, ep.DNSName)
 	}
 
-	return nil
-}
-
-func (p *Provider) deleteByName(ctx context.Context, name, rtype string) error {
-	scpName := p.toSCPName(name)
-	records, err := p.client.ListRecords(ctx, p.zoneID)
-	if err != nil {
-		return err
-	}
-	for _, r := range records {
-		if r.Name == scpName && r.Type == rtype {
-			if err := p.client.DeleteRecord(ctx, p.zoneID, r.ID); err != nil {
-				return fmt.Errorf("delete by name %s: %w", name, err)
-			}
-		}
-	}
 	return nil
 }
 
