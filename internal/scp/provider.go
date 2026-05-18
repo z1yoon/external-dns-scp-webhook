@@ -3,6 +3,7 @@ package scp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -89,6 +90,7 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 		for _, dest := range r.Records {
 			targets = append(targets, strings.Split(dest, ";")...)
 		}
+		sort.Strings(targets)
 		ep := endpoint.NewEndpointWithTTL(name, r.Type, endpoint.TTL(r.TTL), targets...)
 		ep.WithProviderSpecific("scpRecordID", r.ID)
 		log.Debugf("[SCP] read: %s %s → %v", r.Type, name, targets)
@@ -126,7 +128,7 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 		old := changes.UpdateOld[i]
 		recordID, _ := old.GetProviderSpecificProperty("scpRecordID")
 		if p.dryRun {
-			log.Infof("[SCP] dry-run: update %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+			log.Infof("[SCP] dry-run: update %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, ep.Targets)
 			continue
 		}
 		if recordID == "" {
@@ -141,7 +143,7 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 				return fmt.Errorf("update %s: %w", ep.DNSName, err)
 			}
 		}
-		log.Infof("[SCP] updated %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+		log.Infof("[SCP] updated %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, ep.Targets)
 	}
 
 	for _, ep := range changes.Delete {
