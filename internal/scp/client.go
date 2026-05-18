@@ -155,18 +155,19 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targ
 		mapping[i] = dnsRecordMapping{Preference: i + 1, RecordDestination: t}
 	}
 	body := updateRecordRequest{Mapping: mapping, TTL: ttl}
+	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		err := c.do(ctx, http.MethodPut, path, body, nil)
-		if err == nil {
+		lastErr = c.do(ctx, http.MethodPut, path, body, nil)
+		if lastErr == nil {
 			return nil
 		}
-		if attempt < 3 && strings.Contains(err.Error(), "Unchangable Object State") {
+		if attempt < 3 && strings.Contains(lastErr.Error(), "Unchangable Object State") {
 			time.Sleep(10 * time.Second)
 			continue
 		}
-		return err
+		return lastErr
 	}
-	return nil
+	return lastErr
 }
 
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {

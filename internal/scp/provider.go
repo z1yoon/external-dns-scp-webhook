@@ -12,8 +12,6 @@ import (
 	"sigs.k8s.io/external-dns/provider"
 )
 
-const defaultTTL = 300
-
 type Config struct {
 	APIURL       string `env:"SCP_API_URL" default:"https://openapi.samsungsdscloud.com"`
 	AccessKey    string `env:"SCP_ACCESS_KEY"`
@@ -21,6 +19,7 @@ type Config struct {
 	ProjectID    string `env:"SCP_PROJECT_ID"`
 	ZoneID       string `env:"SCP_ZONE_ID"`
 	DomainFilter string `env:"SCP_DOMAIN_FILTER"`
+	TTL          int32  `env:"SCP_TTL" default:"300"`
 	DryRun       bool   `env:"DRY_RUN" default:"false"`
 }
 
@@ -30,6 +29,7 @@ type Provider struct {
 	zoneID          string
 	domainFilterStr string
 	domainFilter    endpoint.DomainFilter
+	ttl             int32
 	dryRun          bool
 }
 
@@ -48,6 +48,7 @@ func NewProvider(cfg Config) (*Provider, error) {
 		client:          NewClient(cfg.APIURL, cfg.AccessKey, cfg.SecretKey, cfg.ProjectID),
 		zoneID:          cfg.ZoneID,
 		domainFilterStr: cfg.DomainFilter,
+		ttl:             cfg.TTL,
 		dryRun:          cfg.DryRun,
 	}
 	if cfg.DomainFilter != "" {
@@ -86,10 +87,8 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 			continue
 		}
 		name := p.toFQDN(r.Name)
-		var targets []string
-		for _, dest := range r.Records {
-			targets = append(targets, strings.Split(dest, ";")...)
-		}
+		targets := make([]string, len(r.Records))
+		copy(targets, r.Records)
 		sort.Strings(targets)
 		ep := endpoint.NewEndpointWithTTL(name, r.Type, endpoint.TTL(r.TTL), targets...)
 		log.Debugf("[SCP] read: %s %s → %v", r.Type, name, targets)
@@ -131,7 +130,7 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 			log.Infof("[SCP] dry-run: create %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
 			continue
 		}
-		if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, ttl(ep)); err != nil {
+		if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, p.resolveTTL(ep)); err != nil {
 			return fmt.Errorf("create %s: %w", ep.DNSName, err)
 		}
 		log.Infof("[SCP] created %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
@@ -148,11 +147,11 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 			return fmt.Errorf("find record %s: %w", old.DNSName, err)
 		}
 		if recordID == "" {
-			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, ttl(ep)); err != nil {
+			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, p.resolveTTL(ep)); err != nil {
 				return fmt.Errorf("recreate %s: %w", ep.DNSName, err)
 			}
 		} else {
-			if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, ep.Targets, ttl(ep)); err != nil {
+			if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, ep.Targets, p.resolveTTL(ep)); err != nil {
 				return fmt.Errorf("update %s: %w", ep.DNSName, err)
 			}
 		}
@@ -179,9 +178,9 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 	return nil
 }
 
-func ttl(ep *endpoint.Endpoint) int32 {
+func (p *Provider) resolveTTL(ep *endpoint.Endpoint) int32 {
 	if ep.RecordTTL.IsConfigured() {
 		return int32(ep.RecordTTL)
 	}
-	return defaultTTL
+	return p.ttl
 }
