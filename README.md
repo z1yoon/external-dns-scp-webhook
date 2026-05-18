@@ -36,8 +36,10 @@ Set `domainFilters` in the ExternalDNS Helm chart to the exact FQDN you want Ext
 ```yaml
 provider: webhook
 
+# Set to the exact FQDN you want ExternalDNS to manage.
+# Only this record will be created/updated — others in the zone are untouched.
 domainFilters:
-  - example.com  # must match SCP_DOMAIN_FILTER below
+  - myapp.gs12345.sds.example.com
 
 sidecars:
   - name: external-dns-scp-webhook
@@ -72,6 +74,8 @@ sidecars:
         value: "DNS_DOMAIN_SERVICE-xxxxxxxx"
       - name: SCP_DOMAIN_FILTER
         value: "example.com"
+      - name: SCP_TTL
+        value: "300"
 
 extraArgs:
   webhook-provider-url: http://localhost:8888
