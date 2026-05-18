@@ -154,10 +154,19 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID, recordID string, targ
 	for i, t := range targets {
 		mapping[i] = dnsRecordMapping{Preference: i + 1, RecordDestination: t}
 	}
-	return c.do(ctx, http.MethodPut, path, updateRecordRequest{
-		Mapping: mapping,
-		TTL:     ttl,
-	}, nil)
+	body := updateRecordRequest{Mapping: mapping, TTL: ttl}
+	for attempt := 1; attempt <= 3; attempt++ {
+		err := c.do(ctx, http.MethodPut, path, body, nil)
+		if err == nil {
+			return nil
+		}
+		if attempt < 3 && strings.Contains(err.Error(), "Unchangable Object State") {
+			time.Sleep(10 * time.Second)
+			continue
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
