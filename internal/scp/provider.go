@@ -87,9 +87,37 @@ func (p *Provider) AdjustEndpoints(endpoints []*endpoint.Endpoint) ([]*endpoint.
 	if p.nodeFilter == "" || p.k8sClient == nil {
 		return endpoints, nil
 	}
-	ctx := context.Background()
+	nodes, err := p.k8sClient.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{
+		LabelSelector: p.nodeFilter,
+	})
+	if err != nil {
+		log.Warnf("[SCP] node label filter: failed to list nodes (%v), using all targets", err)
+		return endpoints, nil
+	}
+	allowed := make(map[string]struct{})
+	for _, node := range nodes.Items {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP || addr.Type == corev1.NodeExternalIP {
+				allowed[addr.Address] = struct{}{}
+			}
+		}
+	}
 	for _, ep := range endpoints {
-		ep.Targets = p.filterTargets(ctx, ep)
+		if ep.RecordType != "A" {
+			continue
+		}
+		var filtered endpoint.Targets
+		for _, t := range ep.Targets {
+			if _, ok := allowed[t]; ok {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) == 0 {
+			log.Warnf("[SCP] node label filter matched no targets for %s, using all", ep.DNSName)
+			continue
+		}
+		log.Debugf("[SCP] node label filter: %v → %v", ep.Targets, filtered)
+		ep.Targets = filtered
 	}
 	return endpoints, nil
 }
@@ -128,39 +156,6 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 		endpoints = append(endpoints, ep)
 	}
 	return endpoints, nil
-}
-
-func (p *Provider) filterTargets(ctx context.Context, ep *endpoint.Endpoint) endpoint.Targets {
-	if p.nodeFilter == "" || p.k8sClient == nil || ep.RecordType != "A" {
-		return ep.Targets
-	}
-	nodes, err := p.k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-		LabelSelector: p.nodeFilter,
-	})
-	if err != nil {
-		log.Warnf("[SCP] node label filter: failed to list nodes (%v), using all targets", err)
-		return ep.Targets
-	}
-	allowed := make(map[string]struct{})
-	for _, node := range nodes.Items {
-		for _, addr := range node.Status.Addresses {
-			if addr.Type == corev1.NodeInternalIP || addr.Type == corev1.NodeExternalIP {
-				allowed[addr.Address] = struct{}{}
-			}
-		}
-	}
-	var filtered endpoint.Targets
-	for _, t := range ep.Targets {
-		if _, ok := allowed[t]; ok {
-			filtered = append(filtered, t)
-		}
-	}
-	if len(filtered) == 0 {
-		log.Warnf("[SCP] node label filter matched no targets for %s, using all", ep.DNSName)
-		return ep.Targets
-	}
-	log.Debugf("[SCP] node label filter: %v → %v", ep.Targets, filtered)
-	return filtered
 }
 
 func (p *Provider) findRecordID(ctx context.Context, name, rtype string) (string, error) {
@@ -250,4 +245,3 @@ func (p *Provider) resolveTTL(ep *endpoint.Endpoint) int32 {
 	}
 	return p.ttl
 }
-
