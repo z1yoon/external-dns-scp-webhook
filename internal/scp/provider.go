@@ -7,20 +7,25 @@ import (
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 )
 
 type Config struct {
-	APIURL       string `env:"SCP_API_URL" default:"https://openapi.samsungsdscloud.com"`
-	AccessKey    string `env:"SCP_ACCESS_KEY"`
-	SecretKey    string `env:"SCP_SECRET_KEY"`
-	ProjectID    string `env:"SCP_PROJECT_ID"`
-	ZoneID       string `env:"SCP_ZONE_ID"`
-	DomainFilter string `env:"SCP_DOMAIN_FILTER"`
-	TTL          int32  `env:"SCP_TTL" default:"300"`
-	DryRun       bool   `env:"DRY_RUN" default:"false"`
+	APIURL          string `env:"SCP_API_URL" default:"https://openapi.samsungsdscloud.com"`
+	AccessKey       string `env:"SCP_ACCESS_KEY"`
+	SecretKey       string `env:"SCP_SECRET_KEY"`
+	ProjectID       string `env:"SCP_PROJECT_ID"`
+	ZoneID          string `env:"SCP_ZONE_ID"`
+	DomainFilter    string `env:"SCP_DOMAIN_FILTER"`
+	TTL             int32  `env:"SCP_TTL" default:"300"`
+	DryRun          bool   `env:"DRY_RUN" default:"false"`
+	NodeLabelFilter string `env:"SCP_NODE_LABEL_FILTER"`
 }
 
 type Provider struct {
@@ -31,6 +36,8 @@ type Provider struct {
 	domainFilter    endpoint.DomainFilter
 	ttl             int32
 	dryRun          bool
+	nodeFilter      string
+	k8sClient       kubernetes.Interface
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -50,9 +57,24 @@ func NewProvider(cfg Config) (*Provider, error) {
 		domainFilterStr: cfg.DomainFilter,
 		ttl:             cfg.TTL,
 		dryRun:          cfg.DryRun,
+		nodeFilter:      cfg.NodeLabelFilter,
 	}
 	if cfg.DomainFilter != "" {
 		p.domainFilter = endpoint.NewDomainFilter([]string{cfg.DomainFilter})
+	}
+	if cfg.NodeLabelFilter != "" {
+		k8sCfg, err := rest.InClusterConfig()
+		if err != nil {
+			log.Warnf("[SCP] SCP_NODE_LABEL_FILTER set but in-cluster config unavailable: %v", err)
+		} else {
+			clientset, err := kubernetes.NewForConfig(k8sCfg)
+			if err != nil {
+				log.Warnf("[SCP] SCP_NODE_LABEL_FILTER set but k8s client failed: %v", err)
+			} else {
+				p.k8sClient = clientset
+				log.Infof("[SCP] node label filter enabled: %s", cfg.NodeLabelFilter)
+			}
+		}
 	}
 	return p, nil
 }
@@ -97,6 +119,39 @@ func (p *Provider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	return endpoints, nil
 }
 
+func (p *Provider) filterTargets(ctx context.Context, ep *endpoint.Endpoint) endpoint.Targets {
+	if p.nodeFilter == "" || p.k8sClient == nil || ep.RecordType != "A" {
+		return ep.Targets
+	}
+	nodes, err := p.k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: p.nodeFilter,
+	})
+	if err != nil {
+		log.Warnf("[SCP] node label filter: failed to list nodes (%v), using all targets", err)
+		return ep.Targets
+	}
+	allowed := make(map[string]struct{})
+	for _, node := range nodes.Items {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP || addr.Type == corev1.NodeExternalIP {
+				allowed[addr.Address] = struct{}{}
+			}
+		}
+	}
+	var filtered endpoint.Targets
+	for _, t := range ep.Targets {
+		if _, ok := allowed[t]; ok {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == 0 {
+		log.Warnf("[SCP] node label filter matched no targets for %s, using all", ep.DNSName)
+		return ep.Targets
+	}
+	log.Debugf("[SCP] node label filter: %v → %v", ep.Targets, filtered)
+	return filtered
+}
+
 func (p *Provider) findRecordID(ctx context.Context, name, rtype string) (string, error) {
 	records, err := p.client.ListRecords(ctx, p.zoneID)
 	if err != nil {
@@ -126,20 +181,22 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 	log.Infof("[SCP] apply: %d create, %d update, %d delete", creates, updates, deletes)
 
 	for _, ep := range changes.Create {
+		targets := p.filterTargets(ctx, ep)
 		if p.dryRun {
-			log.Infof("[SCP] dry-run: create %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+			log.Infof("[SCP] dry-run: create %s %s → %v", ep.RecordType, ep.DNSName, targets)
 			continue
 		}
-		if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, p.resolveTTL(ep)); err != nil {
+		if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, targets, p.resolveTTL(ep)); err != nil {
 			return fmt.Errorf("create %s: %w", ep.DNSName, err)
 		}
-		log.Infof("[SCP] created %s %s → %v", ep.RecordType, ep.DNSName, ep.Targets)
+		log.Infof("[SCP] created %s %s → %v", ep.RecordType, ep.DNSName, targets)
 	}
 
 	for i, ep := range changes.UpdateNew {
 		old := changes.UpdateOld[i]
+		targets := p.filterTargets(ctx, ep)
 		if p.dryRun {
-			log.Infof("[SCP] dry-run: update %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, ep.Targets)
+			log.Infof("[SCP] dry-run: update %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, targets)
 			continue
 		}
 		recordID, err := p.findRecordID(ctx, old.DNSName, old.RecordType)
@@ -147,15 +204,15 @@ func (p *Provider) ApplyChanges(ctx context.Context, changes *plan.Changes) erro
 			return fmt.Errorf("find record %s: %w", old.DNSName, err)
 		}
 		if recordID == "" {
-			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, ep.Targets, p.resolveTTL(ep)); err != nil {
+			if err := p.client.CreateRecord(ctx, p.zoneID, p.toSCPName(ep.DNSName), ep.RecordType, targets, p.resolveTTL(ep)); err != nil {
 				return fmt.Errorf("recreate %s: %w", ep.DNSName, err)
 			}
 		} else {
-			if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, ep.Targets, p.resolveTTL(ep)); err != nil {
+			if err := p.client.UpdateRecord(ctx, p.zoneID, recordID, targets, p.resolveTTL(ep)); err != nil {
 				return fmt.Errorf("update %s: %w", ep.DNSName, err)
 			}
 		}
-		log.Infof("[SCP] updated %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, ep.Targets)
+		log.Infof("[SCP] updated %s %s [%v] → [%v]", ep.RecordType, ep.DNSName, old.Targets, targets)
 	}
 
 	for _, ep := range changes.Delete {
